@@ -1,17 +1,14 @@
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 
 # Page configuration
 st.set_page_config(
-    page_title="Portfolio Tracker",
+    page_title="Portfolio Performance Tracker",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -21,10 +18,10 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size: 3rem;
+        font-size: 2.5rem;
         color: #1f77b4;
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
     }
     .metric-card {
         background-color: #f0f2f6;
@@ -32,50 +29,45 @@ st.markdown("""
         border-radius: 10px;
         margin: 0.5rem 0;
     }
-    .positive {
-        color: #00cc96;
-    }
-    .negative {
-        color: #ef553b;
+    .footer {
+        text-align: center;
+        color: #666;
+        font-size: 0.9rem;
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid #ddd;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Asset universe
+# Asset universe with clear names
 ASSET_UNIVERSE = {
     # US Equities
     'SPY (S&P 500)': 'SPY',
     'QQQ (Nasdaq 100)': 'QQQ', 
-    'IWM (Russell 2000)': 'IWM',
-    'DIA (Dow Jones)': 'DIA',
     'VTI (Total Stock Market)': 'VTI',
     
-    # International Equities
+    # International
     'EFA (International Stocks)': 'EFA',
-    'VEA (Developed Markets)': 'VEA',
-    'IEUR (Europe)': 'IEUR',
+    'IEUR (Europe Stocks)': 'IEUR',
     
     # Bonds
     'BND (Total Bond)': 'BND',
-    'AGG (Aggregate Bond)': 'AGG',
     
     # Commodities
     'GLD (Gold)': 'GLD',
-    'SLV (Silver)': 'SLV',
     
     # Crypto
     'BTC (Bitcoin)': 'BTC-USD',
     'ETH (Ethereum)': 'ETH-USD', 
     'SOL (Solana)': 'SOL-USD',
-    'ADA (Cardano)': 'ADA-USD',
 }
 
-# Your existing portfolio functions (slightly modified for Streamlit)
-def fetch_asset_data(ticker: str, asset_key: str, start_date: str, end_date: str) -> pd.DataFrame:
+def fetch_asset_data(ticker, asset_key, start_date, end_date):
     """Fetch data for a single asset"""
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(start=start_date, end=end_date, interval='1d', auto_adjust=True)
+        df = stock.history(start=start_date, end=end_date, interval='1d')
         
         if df.empty:
             return pd.DataFrame()
@@ -87,14 +79,13 @@ def fetch_asset_data(ticker: str, asset_key: str, start_date: str, end_date: str
         st.error(f"Error fetching {asset_key}: {e}")
         return pd.DataFrame()
 
-def fetch_all_data(asset_keys: list[str], start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch data for all assets"""
+def run_portfolio_simulation(initial_investment, assets, weights, start_date, end_date):
+    """Run portfolio simulation with monthly rebalancing"""
+    # Fetch data for all assets
     all_dfs = []
-    
-    for key in asset_keys:
-        ticker = ASSET_UNIVERSE[key]
-        df = fetch_asset_data(ticker, key, start_date, end_date)
-        
+    for asset in assets:
+        ticker = ASSET_UNIVERSE[asset]
+        df = fetch_asset_data(ticker, asset, start_date, end_date)
         if not df.empty:
             all_dfs.append(df)
     
@@ -102,20 +93,15 @@ def fetch_all_data(asset_keys: list[str], start_date: str, end_date: str) -> pd.
         st.error("No data could be fetched for any asset")
         return pd.DataFrame()
     
-    master_df = pd.concat(all_dfs, axis=1, join='outer')
-    master_df = master_df.ffill().bfill()
-    
-    return master_df
-
-def run_portfolio_simulation(initial_investment: float, asset_keys: list[str], 
-                           weights: list[float], start_date: str, end_date: str) -> pd.DataFrame:
-    """Run portfolio simulation with monthly rebalancing"""
-    prices_df = fetch_all_data(asset_keys, start_date, end_date)
+    # Merge data
+    prices_df = pd.concat(all_dfs, axis=1, join='outer')
+    prices_df = prices_df.ffill().bfill()
     
     if prices_df.empty:
+        st.error("No valid data after merging")
         return pd.DataFrame()
     
-    # Get rebalance dates (first of each month)
+    # Get rebalance dates (first trading day of each month)
     rebalance_dates = []
     for year in prices_df.index.year.unique():
         for month in prices_df.index.month.unique():
@@ -124,51 +110,65 @@ def run_portfolio_simulation(initial_investment: float, asset_keys: list[str],
                 rebalance_dates.append(month_data.index[0])
     
     # Run simulation
-    current_shares = {key: 0.0 for key in asset_keys}
+    current_shares = {asset: 0.0 for asset in assets}
     portfolio_history = []
     
     for i, (date, prices) in enumerate(prices_df.iterrows()):
         current_rebalance = date in rebalance_dates
         
         if current_rebalance:
+            # Calculate current portfolio value
             if portfolio_history:
-                portfolio_value = sum(current_shares[key] * prices[key] for key in asset_keys)
+                portfolio_value = sum(current_shares[asset] * prices[asset] for asset in assets)
             else:
                 portfolio_value = initial_investment
             
-            for key, weight in zip(asset_keys, weights):
+            # Rebalance
+            for asset, weight in zip(assets, weights):
                 target_value = portfolio_value * weight
-                current_shares[key] = target_value / prices[key]
+                current_shares[asset] = target_value / prices[asset]
         
+        # Calculate daily values
         daily_values = {'date': date}
         total_value = 0
         
-        for key in asset_keys:
-            asset_value = current_shares[key] * prices[key]
-            daily_values[f'{key}_value'] = asset_value
+        for asset in assets:
+            asset_value = current_shares[asset] * prices[asset]
+            daily_values[f'{asset}_value'] = asset_value
             total_value += asset_value
         
         daily_values['total_value'] = total_value
         portfolio_history.append(daily_values)
     
+    # Create results
     result_df = pd.DataFrame(portfolio_history)
+    if result_df.empty:
+        return result_df
+        
     result_df = result_df.set_index('date')
     result_df['daily_return'] = result_df['total_value'].pct_change()
     result_df['cumulative_return'] = (result_df['total_value'] / initial_investment) - 1
     
     return result_df
 
-def calculate_metrics(portfolio_df: pd.DataFrame, initial_investment: float) -> dict:
+def calculate_metrics(portfolio_df, initial_investment):
     """Calculate portfolio performance metrics"""
+    if portfolio_df.empty:
+        return {}
+        
     final_value = portfolio_df['total_value'].iloc[-1]
     total_return = (final_value - initial_investment) / initial_investment
     
     days = (portfolio_df.index[-1] - portfolio_df.index[0]).days
-    years = days / 365.25
-    annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+    years = max(days / 365.25, 0.001)  # Avoid division by zero
+    
+    annualized_return = (1 + total_return) ** (1 / years) - 1
     
     daily_returns = portfolio_df['daily_return'].dropna()
-    annualized_volatility = daily_returns.std() * np.sqrt(252)
+    if len(daily_returns) > 0:
+        annualized_volatility = daily_returns.std() * np.sqrt(252)
+    else:
+        annualized_volatility = 0
     
     risk_free_rate = 0.02
     sharpe_ratio = (annualized_return - risk_free_rate) / annualized_volatility if annualized_volatility > 0 else 0
@@ -188,14 +188,13 @@ def calculate_metrics(portfolio_df: pd.DataFrame, initial_investment: float) -> 
         'total_days': days
     }
 
-# Streamlit App
+# Main App
 def main():
-    # Header
     st.markdown('<h1 class="main-header">📈 Portfolio Performance Tracker</h1>', unsafe_allow_html=True)
     
-    # Sidebar for inputs
+    # Sidebar
     with st.sidebar:
-        st.header("Portfolio Configuration")
+        st.header("🎯 Portfolio Configuration")
         
         # Date range
         col1, col2 = st.columns(2)
@@ -208,7 +207,6 @@ def main():
         initial_investment = st.number_input(
             "Initial Investment ($)", 
             min_value=1000, 
-            max_value=1000000, 
             value=10000,
             step=1000
         )
@@ -216,28 +214,33 @@ def main():
         st.markdown("---")
         st.subheader("Asset Allocation")
         
-        # Asset selection and weights
+        # Asset selection - simplified for 3 assets
         assets = []
         weights = []
+        
+        asset_options = list(ASSET_UNIVERSE.keys())
         
         for i in range(3):
             col1, col2 = st.columns([3, 1])
             with col1:
                 asset = st.selectbox(
                     f"Asset {i+1}",
-                    options=list(ASSET_UNIVERSE.keys()),
+                    options=asset_options,
+                    index=i if i < len(asset_options) else 0,
                     key=f"asset_{i}"
                 )
                 assets.append(asset)
             with col2:
+                # Default weights: 40%, 40%, 20%
+                default_weight = 40 if i < 2 else 20
                 weight = st.number_input(
                     "Weight %",
                     min_value=0,
                     max_value=100,
-                    value=33 if i < 2 else 34,
+                    value=default_weight,
                     key=f"weight_{i}"
                 )
-                weights.append(weight / 100)
+                weights.append(weight / 100.0)
         
         # Validate weights
         total_weight = sum(weights)
@@ -245,169 +248,239 @@ def main():
             st.error(f"⚠️ Weights must sum to 100% (current: {total_weight*100:.1f}%)")
             st.stop()
         
-        # Run simulation button
-        run_simulation = st.button("🚀 Run Portfolio Simulation", type="primary")
-    
-    # Main content area
-    if run_simulation:
-        with st.spinner("Running portfolio simulation..."):
-            # Run simulation
+        if st.button("🚀 Run Portfolio Simulation", type="primary", use_container_width=True):
+            st.session_state.run_simulation = True
+        else:
+            st.session_state.run_simulation = False
+
+    # Main content
+    if st.session_state.get('run_simulation', False):
+        with st.spinner("Running portfolio simulation... This may take a few seconds."):
             portfolio_df = run_portfolio_simulation(
                 initial_investment, assets, weights, 
                 start_date.strftime('%Y-%m-%d'), 
                 end_date.strftime('%Y-%m-%d')
             )
+        
+        if portfolio_df.empty:
+            st.error("❌ Simulation failed. Please try different assets or date range.")
+            return
+        
+        # Calculate metrics
+        metrics = calculate_metrics(portfolio_df, initial_investment)
+        
+        if not metrics:
+            st.error("❌ Could not calculate metrics.")
+            return
+        
+        # Display results
+        st.success("✅ Simulation completed successfully!")
+        
+        # Performance Metrics
+        st.markdown("## 📊 Performance Summary")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Initial Investment", f"${metrics['initial_value']:,.0f}")
+            st.metric("Final Value", f"${metrics['final_value']:,.0f}")
+        
+        with col2:
+            st.metric("Total Return", f"{metrics['total_return']:.2%}")
+            st.metric("Annualized Return", f"{metrics['annualized_return']:.2%}")
+        
+        with col3:
+            st.metric("Volatility", f"{metrics['volatility']:.2%}")
+            st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+        
+        with col4:
+            st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2%}")
+            st.metric("Period", f"{metrics['total_days']} days")
+        
+        # Charts
+        st.markdown("## 📈 Portfolio Charts")
+        
+        tab1, tab2, tab3 = st.tabs(["Portfolio Value", "Performance", "Asset Allocation"])
+        
+        with tab1:
+            # Portfolio value chart
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=portfolio_df.index,
+                y=portfolio_df['total_value'],
+                mode='lines',
+                name='Portfolio Value',
+                line=dict(color='#1f77b4', width=3)
+            ))
+            fig.update_layout(
+                title="Portfolio Value Over Time",
+                xaxis_title="Date",
+                yaxis_title="Portfolio Value ($)",
+                template="plotly_white",
+                height=500,
+                annotations=[
+                    dict(
+                        x=0.5,
+                        y=-0.15,
+                        xref="paper",
+                        yref="paper",
+                        text="Source: Yahoo! Finance",
+                        showarrow=False,
+                        font=dict(size=12, color="gray"),
+                    )
+                ]
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with tab2:
+            # Cumulative returns chart
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=portfolio_df.index,
+                y=portfolio_df['cumulative_return'] * 100,
+                mode='lines',
+                name='Cumulative Return',
+                line=dict(color='#00cc96', width=3)
+            ))
+            fig.update_layout(
+                title="Cumulative Returns",
+                xaxis_title="Date",
+                yaxis_title="Return (%)",
+                template="plotly_white",
+                height=500,
+                annotations=[
+                    dict(
+                        x=0.5,
+                        y=-0.15,
+                        xref="paper",
+                        yref="paper",
+                        text="Source: Yahoo! Finance",
+                        showarrow=False,
+                        font=dict(size=12, color="gray"),
+                    )
+                ]
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with tab3:
+            # Asset allocation pie chart
+            asset_values = [portfolio_df[f'{asset}_value'].iloc[-1] for asset in assets]
+            fig = go.Figure(data=[go.Pie(
+                labels=assets,
+                values=asset_values,
+                hole=0.3,
+                marker_colors=px.colors.qualitative.Set3
+            )])
+            fig.update_layout(
+                title="Current Asset Allocation",
+                height=500,
+                annotations=[
+                    dict(
+                        x=0.5,
+                        y=-0.1,
+                        xref="paper",
+                        yref="paper",
+                        text="Source: Yahoo! Finance",
+                        showarrow=False,
+                        font=dict(size=12, color="gray"),
+                    )
+                ] + [  # Keep the pie chart annotations
+                    dict(
+                        text="Allocation",
+                        x=0.5,
+                        y=0.5,
+                        font_size=20,
+                        showarrow=False,
+                    )
+                ]
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Global footer
+        st.markdown("---")
+        st.markdown(
+            '<div class="footer">'
+            'Data Source: Yahoo! Finance | '
+            'Built with Streamlit | '
+            'For educational purposes only'
+            '</div>',
+            unsafe_allow_html=True
+        )
+        
+        # Raw data
+        with st.expander("📋 View Raw Data"):
+            st.dataframe(portfolio_df.tail(10))
             
-            if portfolio_df.empty:
-                st.error("Failed to run simulation. Please check your inputs.")
-                return
-            
-            # Calculate metrics
-            metrics = calculate_metrics(portfolio_df, initial_investment)
-            
-            # Display metrics
-            st.markdown("## 📊 Portfolio Performance Summary")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "Initial Investment", 
-                    f"${metrics['initial_value']:,.0f}"
-                )
-                st.metric(
-                    "Final Value", 
-                    f"${metrics['final_value']:,.0f}",
-                    f"${metrics['final_value'] - metrics['initial_value']:,.0f}"
-                )
-            
-            with col2:
-                return_color = "positive" if metrics['total_return'] >= 0 else "negative"
-                st.metric(
-                    "Total Return", 
-                    f"{metrics['total_return']:.2%}",
-                    delta=f"{metrics['annualized_return']:.2%} annualized"
-                )
-                st.metric("Volatility", f"{metrics['volatility']:.2%}")
-            
-            with col3:
-                st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
-                st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2%}")
-            
-            with col4:
-                st.metric("Period", f"{metrics['total_days']} days")
-                st.metric("Best Day", f"{portfolio_df['daily_return'].max():.2%}")
-            
-            # Charts
-            st.markdown("## 📈 Portfolio Charts")
-            
-            tab1, tab2, tab3 = st.tabs(["Portfolio Value", "Performance", "Asset Allocation"])
-            
-            with tab1:
-                # Portfolio value over time
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=portfolio_df.index,
-                    y=portfolio_df['total_value'],
-                    mode='lines',
-                    name='Portfolio Value',
-                    line=dict(color='#1f77b4', width=3)
-                ))
-                fig.update_layout(
-                    title="Portfolio Value Over Time",
-                    xaxis_title="Date",
-                    yaxis_title="Portfolio Value ($)",
-                    template="plotly_white",
-                    height=500
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with tab2:
-                # Cumulative returns
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=portfolio_df.index,
-                    y=portfolio_df['cumulative_return'] * 100,
-                    mode='lines',
-                    name='Cumulative Return',
-                    line=dict(color='#00cc96', width=3)
-                ))
-                fig.update_layout(
-                    title="Cumulative Returns",
-                    xaxis_title="Date",
-                    yaxis_title="Return (%)",
-                    template="plotly_white",
-                    height=500
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with tab3:
-                # Asset allocation pie chart
-                asset_values = [portfolio_df[f'{asset}_value'].iloc[-1] for asset in assets]
-                fig = go.Figure(data=[go.Pie(
-                    labels=assets,
-                    values=asset_values,
-                    hole=.3,
-                    marker_colors=px.colors.qualitative.Set3
-                )])
-                fig.update_layout(
-                    title="Current Asset Allocation",
-                    height=500
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Raw data
-            with st.expander("View Raw Data"):
-                st.dataframe(portfolio_df.tail(10))
-                
             # Download button
             csv = portfolio_df.to_csv()
             st.download_button(
-                label="📥 Download Portfolio Data",
+                label="📥 Download Portfolio Data as CSV",
                 data=csv,
                 file_name="portfolio_data.csv",
                 mime="text/csv"
             )
-
+    
     else:
-        # Welcome message when no simulation has been run
+        # Welcome screen
         st.markdown("""
         ## Welcome to the Portfolio Performance Tracker! 🎯
         
-        This tool helps you analyze how your investment portfolio would have performed
-        with monthly rebalancing.
+        This tool simulates how your investment portfolio would have performed with **monthly rebalancing**.
         
-        ### How to use:
+        ### 🚀 How to use:
         1. **Configure** your portfolio in the sidebar
         2. **Select** 3 assets and set their weights (must sum to 100%)
         3. **Choose** your initial investment and date range
-        4. **Click** "Run Portfolio Simulation" to see the results!
+        4. **Click** "Run Portfolio Simulation" to see the magic!
         
-        ### Features:
-        - 📊 Performance metrics and analytics
-        - 📈 Interactive charts and visualizations  
-        - 💰 Portfolio value tracking
-        - 📉 Risk analysis (volatility, drawdowns)
-        - 📥 Downloadable results
+        ### 📊 What you'll see:
+        - Performance metrics and analytics
+        - Interactive charts and visualizations  
+        - Portfolio value tracking over time
+        - Risk analysis (volatility, drawdowns)
+        - Downloadable results
         
-        Get started by configuring your portfolio in the sidebar! →
+        **Ready to get started?** Configure your portfolio in the sidebar! →
         """)
         
-        # Sample portfolio preview
+        # Sample portfolios
         st.markdown("### 💡 Sample Portfolio Ideas")
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.markdown("**Conservative**")
-            st.write("60% SPY\n\n30% BND\n\n10% GLD")
+            st.markdown("**🛡️ Conservative**")
+            st.write("""
+            - 60% SPY (S&P 500)
+            - 30% BND (Total Bond)  
+            - 10% GLD (Gold)
+            """)
         
         with col2:
-            st.markdown("**Balanced**") 
-            st.write("50% SPY\n\n30% QQQ\n\n20% BTC")
+            st.markdown("**⚖️ Balanced**")
+            st.write("""
+            - 40% SPY (S&P 500)
+            - 40% QQQ (Nasdaq 100)
+            - 20% BTC (Bitcoin)
+            """)
         
         with col3:
-            st.markdown("**Growth**")
-            st.write("40% QQQ\n\n40% BTC\n\n20% ETH")
+            st.markdown("**🚀 Growth**")
+            st.write("""
+            - 50% QQQ (Nasdaq 100)
+            - 30% BTC (Bitcoin)
+            - 20% ETH (Ethereum)
+            """)
+        
+        # Footer on welcome page too
+        st.markdown("---")
+        st.markdown(
+            '<div class="footer">'
+            'Data Source: Yahoo! Finance | '
+            'Built with Streamlit | '
+            'For educational purposes only'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
 if __name__ == "__main__":
     main()
