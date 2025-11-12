@@ -1,2 +1,18 @@
-# Portfolio_Tracker_App
-an app that receives asset allocation and selection, then tells you the evolution of such portfolio for the given time. It pulls data from Yahoo! Finance
+# 📈 Portfolio Performance Tracker
+
+A Streamlit web app that simulates portfolio performance with monthly rebalancing.
+
+## Features
+- 3-asset portfolio allocation
+- Monthly rebalancing simulation  
+- Interactive performance charts
+- Risk metrics and analytics
+- Downloadable results
+
+## Live Demo
+[👉 [Check it out!]](https://carreoncerda-portfolio-tracker.streamlit.app/)
+
+## Run Locally
+```bash
+pip install -r requirements.txt
+streamlit run portfolio_app.py
